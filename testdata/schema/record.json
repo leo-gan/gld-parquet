@@ -1,0 +1,9 @@
+{
+  "title": "Record",
+  "type": "object",
+  "required": ["id"],
+  "properties": {
+    "id": {"type": "integer", "x-parquet-type": "int64"},
+    "name": {"type": "string"}
+  }
+}
