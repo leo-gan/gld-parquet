@@ -24,9 +24,11 @@ def _lit(mut out: List[Byte], raw: List[Byte], anchor: Int, end: Int):
         _extra(out, lit - 15)
     else:
         out[tok] = Byte(lit << 4)
-    var i = anchor
-    while i < end:
-        out.append(raw[i])
+    var base = len(out)
+    out.resize(base + lit, Byte(0))
+    var i = 0
+    while i < lit:
+        out[base + i] = raw[anchor + i]
         i += 1
 
 
@@ -44,9 +46,11 @@ def _seq(mut out: List[Byte], raw: List[Byte], anchor: Int, at: Int, offset: Int
     out[tok] = Byte((ll << 4) | mm)
     if lit >= 15:
         _extra(out, lit - 15)
-    var i = anchor
-    while i < at:
-        out.append(raw[i])
+    var base = len(out)
+    out.resize(base + lit, Byte(0))
+    var i = 0
+    while i < lit:
+        out[base + i] = raw[anchor + i]
         i += 1
     out.append(Byte(offset & 255))
     out.append(Byte((offset >> 8) & 255))
@@ -65,13 +69,19 @@ def lz4_raw_compress(raw: List[Byte]) raises DecodeError -> List[Byte]:
     if n < 13:
         _lit(out, raw, 0, n)
         return out^
+    var bits = 8
+    var cap = 256
+    while bits < LZ4_HASH and cap < n:
+        bits += 1
+        cap = cap << 1
     var table = List[Int]()
-    table.resize(1 << LZ4_HASH, -1)
+    table.resize(cap, -1)
+    var shift = UInt32(32 - bits)
     var anchor = 0
     var i = 0
     while i <= n - 12:
         var v = UInt32(Int(raw[i])) | (UInt32(Int(raw[i + 1])) << 8) | (UInt32(Int(raw[i + 2])) << 16) | (UInt32(Int(raw[i + 3])) << 24)
-        var h = Int((v * UInt32(2654435761)) >> UInt32(32 - LZ4_HASH))
+        var h = Int((v * UInt32(2654435761)) >> shift)
         var src = table[h]
         table[h] = i
         if src < 0 or i - src > 65535 or i - src <= 0 or raw[src] != raw[i] or raw[src + 1] != raw[i + 1] or raw[src + 2] != raw[i + 2] or raw[src + 3] != raw[i + 3]:
@@ -111,11 +121,14 @@ def lz4_raw_decompress(raw: List[Byte]) raises DecodeError -> List[Byte]:
                     break
         if i + lit > n or len(out) + lit > LZ4_MAX:
             raise DecodeError(DecodeError.KIND_COMPRESSION, i)
-        var k = 0
-        while k < lit:
-            out.append(raw[i])
-            i += 1
-            k += 1
+        if lit > 0:
+            var base = len(out)
+            out.resize(base + lit, Byte(0))
+            var k = 0
+            while k < lit:
+                out[base + k] = raw[i]
+                i += 1
+                k += 1
         if i >= n:
             break
         if i + 2 > n:
@@ -136,11 +149,14 @@ def lz4_raw_decompress(raw: List[Byte]) raises DecodeError -> List[Byte]:
                     break
         if len(out) + mlen > LZ4_MAX:
             raise DecodeError(DecodeError.KIND_COMPRESSION, i)
-        var start = len(out) - offset
-        k = 0
-        while k < mlen:
-            out.append(out[start + k])
-            k += 1
+        if mlen > 0:
+            var base2 = len(out)
+            var start = base2 - offset
+            out.resize(base2 + mlen, Byte(0))
+            var k2 = 0
+            while k2 < mlen:
+                out[base2 + k2] = out[start + k2]
+                k2 += 1
     return out^
 
 
@@ -162,9 +178,11 @@ def lz4_hadoop_decompress(raw: List[Byte]) raises DecodeError -> List[Byte]:
         if usize < 0 or csize < 0 or i + csize > n or usize > LZ4_MAX:
             raise DecodeError(DecodeError.KIND_COMPRESSION, i)
         if csize == usize:
+            var base = len(out)
+            out.resize(base + csize, Byte(0))
             var k = 0
             while k < csize:
-                out.append(raw[i + k])
+                out[base + k] = raw[i + k]
                 k += 1
         else:
             var block = List[Byte]()

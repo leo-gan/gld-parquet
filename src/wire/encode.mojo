@@ -163,19 +163,35 @@ def _values_plain(imm cols: Cols, leaf: Int, physical: Int, type_len: Int, vb: I
             i += 1
         return plain_bool_encode(vals, n)
     if physical == PHY_I32:
-        var vals = List[Int]()
+        var out = List[Byte]()
+        out.resize(n * 4, Byte(0))
+        var base = cols.val_b[leaf] + vb
         var i = 0
         while i < n:
-            vals.append(cols.i64s[cols.val_b[leaf] + vb + i])
+            var v = cols.i64s[base + i]
+            if v < 0:
+                v = v + 4294967296
+            var o = i * 4
+            out[o] = Byte(v & 255)
+            out[o + 1] = Byte((v >> 8) & 255)
+            out[o + 2] = Byte((v >> 16) & 255)
+            out[o + 3] = Byte((v >> 24) & 255)
             i += 1
-        return plain_i32_encode(vals, n)
+        return out^
     if physical == PHY_I64:
-        var vals = List[Int]()
+        var out = List[Byte]()
+        out.resize(n * 8, Byte(0))
+        var base = cols.val_b[leaf] + vb
         var i = 0
         while i < n:
-            vals.append(cols.i64s[cols.val_b[leaf] + vb + i])
+            var u = UInt64(cols.i64s[base + i])
+            var o = i * 8
+            var b = 0
+            while b < 8:
+                out[o + b] = Byte(Int((u >> UInt64(8 * b)) & 255))
+                b += 1
             i += 1
-        return plain_i64_encode(vals, n)
+        return out^
     if physical == PHY_F32:
         var out = List[Byte]()
         var i = 0
@@ -286,9 +302,50 @@ def _page_v1(mut file: List[Byte], codec: Int, num_values: Int, encoding: Int, c
     return len(file) - start
 
 
+def _uleb(mut out: List[Byte], v: Int):
+    var x = v
+    while x >= 128:
+        out.append(Byte((x & 127) | 128))
+        x = x >> 7
+    out.append(Byte(x))
+
+
+def _const_defs(imm cols: Cols, leaf: Int, lb: Int, n: Int, max_def: Int) -> List[Byte]:
+    var out = List[Byte]()
+    if n <= 0 or max_def <= 0:
+        return out^
+    var b = cols.level_b[leaf] + lb
+    var v0 = cols.defs[b]
+    var i = 1
+    while i < n:
+        if cols.defs[b + i] != v0:
+            return out^
+        i += 1
+    var width = level_width(max_def)
+    var body = List[Byte]()
+    _uleb(body, n << 1)
+    var nbytes = (width + 7) >> 3
+    var u = UInt64(v0)
+    var k = 0
+    while k < nbytes:
+        body.append(Byte(Int((u >> UInt64(8 * k)) & 255)))
+        k += 1
+    var nlen = len(body)
+    out.append(Byte(nlen & 255))
+    out.append(Byte((nlen >> 8) & 255))
+    out.append(Byte((nlen >> 16) & 255))
+    out.append(Byte((nlen >> 24) & 255))
+    extend_list(out, body)
+    return out^
+
+
 def _levels(imm cols: Cols, leaf: Int, lb: Int, le: Int, max_def: Int, max_rep: Int) -> List[Byte]:
     var out = List[Byte]()
     var n = le - lb
+    if max_rep == 0 and max_def > 0:
+        var fast = _const_defs(cols, leaf, lb, n, max_def)
+        if len(fast) > 0:
+            return fast^
     if max_rep > 0:
         var reps = List[Int]()
         var i = 0
@@ -517,7 +574,7 @@ def _gather(imm table: Table, rg_rows: Int) -> List[RgSlice]:
 
 
 def encode_table(imm table: Table, imm opts: WriteOpts) raises DecodeError -> List[Byte]:
-    var file = List[Byte]()
+    var file = List[Byte](capacity=1024)
     file.append(Byte(80))
     file.append(Byte(65))
     file.append(Byte(82))

@@ -4,7 +4,7 @@ from compress.gzip import gzip_decompress
 from compress.lz4raw import lz4_hadoop_decompress, lz4_raw_decompress
 from compress.snappy import snappy_decompress
 from compress.zstd import zstd_decompress
-from runtime.buf import crc32_bytes, i32_at, i64_at, slice_list, u32_at
+from runtime.buf import crc32_bytes, i32_at, i64_at, i64_of, slice_list, u32_at
 from runtime.error import DecodeError
 from runtime.model import (
     CODEC_GZIP,
@@ -475,18 +475,36 @@ def _append_plain(mut cols: Cols, physical: Int, type_len: Int, buf: List[Byte],
             k += 1
         i += (count + 7) >> 3
     elif physical == PHY_I32:
-        var vals = plain_i32_decode(buf, i, count)
+        if count < 0 or i + count * 4 > len(buf):
+            raise DecodeError(DecodeError.KIND_EOF, i)
+        var base = len(cols.i64s)
+        cols.i64s.resize(base + count, 0)
         var k = 0
         while k < count:
-            cols.add_i64(vals[k])
+            var o = i + k * 4
+            var u = Int(buf[o]) | (Int(buf[o + 1]) << 8) | (Int(buf[o + 2]) << 16) | (Int(buf[o + 3]) << 24)
+            if u >= 2147483648:
+                u = u - 4294967296
+            cols.i64s[base + k] = u
             k += 1
+        cols.val_n[cols.cur] += count
         i += count * 4
     elif physical == PHY_I64:
-        var vals = plain_i64_decode(buf, i, count)
+        if count < 0 or i + count * 8 > len(buf):
+            raise DecodeError(DecodeError.KIND_EOF, i)
+        var base = len(cols.i64s)
+        cols.i64s.resize(base + count, 0)
         var k = 0
         while k < count:
-            cols.add_i64(vals[k])
+            var o = i + k * 8
+            var u = UInt64(0)
+            var b = 0
+            while b < 8:
+                u = u | (UInt64(Int(buf[o + b])) << UInt64(8 * b))
+                b += 1
+            cols.i64s[base + k] = i64_of(u)
             k += 1
+        cols.val_n[cols.cur] += count
         i += count * 8
     elif physical == PHY_F32:
         var k = 0
@@ -508,13 +526,19 @@ def _append_plain(mut cols: Cols, physical: Int, type_len: Int, buf: List[Byte],
             k += 1
     elif physical == PHY_BA:
         var seq = plain_ba_decode(buf, i, len(buf), count)
-        var prev = 0
+        var base = len(cols.raw)
+        var nr = len(seq.raw)
+        if nr > 0:
+            cols.raw.resize(base + nr, Byte(0))
+            var t = 0
+            while t < nr:
+                cols.raw[base + t] = seq.raw[t]
+                t += 1
         var k = 0
         while k < count:
-            var piece = slice_list(seq.raw, prev, seq.ends[k] - prev)
-            cols.add_bytes(piece)
-            prev = seq.ends[k]
+            cols.ends.append(base + seq.ends[k])
             k += 1
+        cols.val_n[cols.cur] += count
         i += seq.used
     elif physical == PHY_FIXED or physical == PHY_I96:
         var width = type_len

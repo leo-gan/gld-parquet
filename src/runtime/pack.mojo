@@ -110,6 +110,20 @@ def flush_bits(mut out: List[Byte], acc: UInt64, nbit: Int):
 
 
 def take_bits(raw: List[Byte], mut bit: Int, width: Int, end: Int, msb: Int) raises DecodeError -> UInt64:
+    if msb == 0 and width > 0 and width <= 56:
+        var last = bit + width - 1
+        if last < 0 or (last >> 3) >= end or (last >> 3) >= len(raw):
+            raise DecodeError(DecodeError.KIND_EOF, bit >> 3)
+        var bi = bit >> 3
+        var w = UInt64(0)
+        var t = 0
+        while t < 8 and bi + t < len(raw):
+            w = w | (UInt64(Int(raw[bi + t])) << UInt64(8 * t))
+            t += 1
+        var piece = w >> UInt64(bit & 7)
+        piece = piece & (_sl(UInt64(1), width) - 1)
+        bit += width
+        return piece
     var out = UInt64(0)
     var k = 0
     while k < width:
@@ -251,10 +265,12 @@ def rle_decode(raw: List[Byte], mut i: Int, end: Int, width: Int, count: Int) ra
                 u = u | _sl(UInt64(Int(raw[i + b])), 8 * b)
                 b += 1
             i += nbytes
-            var k = 0
-            while k < run and len(out) < count:
-                out.append(Int(u))
-                k += 1
+            var have = len(out)
+            var add = run
+            if have + add > count:
+                add = count - have
+            if add > 0:
+                out.resize(have + add, Int(u))
         else:
             var groups = header >> 1
             if groups <= 0:
@@ -288,10 +304,16 @@ def levels_encode(vals: List[Int], n: Int, width: Int, with_len: Int) -> List[By
     if with_len == 0:
         return body^
     var out = List[Byte]()
-    put_u32(out, len(body))
+    var nbody = len(body)
+    out.resize(4 + nbody, Byte(0))
+    var nlen = nbody
+    out[0] = Byte(nlen & 255)
+    out[1] = Byte((nlen >> 8) & 255)
+    out[2] = Byte((nlen >> 16) & 255)
+    out[3] = Byte((nlen >> 24) & 255)
     var i = 0
-    while i < len(body):
-        out.append(body[i])
+    while i < nbody:
+        out[4 + i] = body[i]
         i += 1
     return out^
 
@@ -677,18 +699,32 @@ def bss_decode(raw: List[Byte], off: Int, n: Int, width: Int) raises DecodeError
 
 def plain_i32_encode(vals: List[Int], n: Int) -> List[Byte]:
     var out = List[Byte]()
+    out.resize(n * 4, Byte(0))
     var i = 0
     while i < n:
-        put_i32(out, vals[i])
+        var v = vals[i]
+        if v < 0:
+            v = v + 4294967296
+        var o = i * 4
+        out[o] = Byte(v & 255)
+        out[o + 1] = Byte((v >> 8) & 255)
+        out[o + 2] = Byte((v >> 16) & 255)
+        out[o + 3] = Byte((v >> 24) & 255)
         i += 1
     return out^
 
 
 def plain_i64_encode(vals: List[Int], n: Int) -> List[Byte]:
     var out = List[Byte]()
+    out.resize(n * 8, Byte(0))
     var i = 0
     while i < n:
-        put_i64(out, vals[i])
+        var u = UInt64(vals[i])
+        var o = i * 8
+        var b = 0
+        while b < 8:
+            out[o + b] = Byte(Int((u >> UInt64(8 * b)) & 255))
+            b += 1
         i += 1
     return out^
 
@@ -731,12 +767,15 @@ def plain_ba_decode(raw: List[Byte], off: Int, end: Int, count: Int) raises Deco
         i += 4
         if n < 0 or i + n > end:
             raise DecodeError(DecodeError.KIND_ENCODING, i)
-        var t = 0
-        while t < n:
-            out.raw.append(raw[i + t])
-            t += 1
+        var base = len(out.raw)
+        if n > 0:
+            out.raw.resize(base + n, Byte(0))
+            var t = 0
+            while t < n:
+                out.raw[base + t] = raw[i + t]
+                t += 1
         i += n
-        out.ends.append(len(out.raw))
+        out.ends.append(base + n)
         k += 1
     out.used = i - off
     return out^
