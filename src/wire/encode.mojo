@@ -45,7 +45,7 @@ from wire.decode import Table
 from wire.footer import Footer
 
 
-comptime CREATED = "gld-parquet version 0.1.0"
+comptime CREATED = "gld-parquet version 0.2.0"
 
 
 struct RgSlice(Copyable, ImplicitlyCopyable):
