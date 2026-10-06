@@ -52,9 +52,11 @@ def _emit_lit(mut out: List[Byte], raw: List[Byte], a: Int, b: Int):
             out.append(Byte(61 << 2))
             out.append(Byte(len_m1 & 255))
             out.append(Byte((len_m1 >> 8) & 255))
+        var base = len(out)
+        out.resize(base + take, Byte(0))
         var k = 0
         while k < take:
-            out.append(raw[at + k])
+            out[base + k] = raw[at + k]
             k += 1
         at += take
         left -= take
@@ -85,17 +87,27 @@ def snappy_compress(raw: List[Byte]) raises DecodeError -> List[Byte]:
     var n = len(raw)
     if n > SNAPPY_MAX:
         raise DecodeError(DecodeError.KIND_COMPRESSION, n)
-    var out = List[Byte]()
+    var out = List[Byte](capacity=n + 32)
     _varint(out, n)
     if n == 0:
         return out^
+    if n < 8:
+        _emit_lit(out, raw, 0, n)
+        return out^
+    var bits = 8
+    var cap = 256
+    while bits < 14 and cap < n:
+        bits += 1
+        cap = cap << 1
     var table = List[Int]()
-    table.resize(1 << 14, -1)
+    table.resize(cap, -1)
+    var shift = UInt32(32 - bits)
+    var mask = cap - 1
     var i = 0
     var anchor = 0
     while i + 4 <= n:
         var v = UInt32(Int(raw[i])) | (UInt32(Int(raw[i + 1])) << 8) | (UInt32(Int(raw[i + 2])) << 16) | (UInt32(Int(raw[i + 3])) << 24)
-        var h = Int((v * UInt32(0x1E35A7BD)) >> UInt32(18))
+        var h = Int((v * UInt32(0x1E35A7BD)) >> shift) & mask
         var src = table[h]
         table[h] = i
         var matched = 0
@@ -109,14 +121,7 @@ def snappy_compress(raw: List[Byte]) raises DecodeError -> List[Byte]:
                     m += 1
                 _emit_lit(out, raw, anchor, i)
                 _emit_copy(out, i - src, m)
-                var t = i + 1
-                var stop = i + m
-                while t + 3 < stop and t + 3 < n:
-                    var vv = UInt32(Int(raw[t])) | (UInt32(Int(raw[t + 1])) << 8) | (UInt32(Int(raw[t + 2])) << 16) | (UInt32(Int(raw[t + 3])) << 24)
-                    var hh = Int((vv * UInt32(0x1E35A7BD)) >> UInt32(18)) & 16383
-                    table[hh] = t
-                    t += 1
-                i = stop
+                i = i + m
                 anchor = i
                 matched = 1
         if matched == 0:
@@ -129,7 +134,11 @@ def snappy_decompress(raw: List[Byte]) raises DecodeError -> List[Byte]:
     var i = 0
     var expect = _uvar(raw, i)
     var out = List[Byte]()
-    while len(out) < expect:
+    if expect == 0:
+        return out^
+    out.resize(expect, Byte(0))
+    var o = 0
+    while o < expect:
         if i >= len(raw):
             raise DecodeError(DecodeError.KIND_COMPRESSION, i)
         var tag = Int(raw[i])
@@ -137,9 +146,8 @@ def snappy_decompress(raw: List[Byte]) raises DecodeError -> List[Byte]:
         var kind = tag & 3
         if kind == 0:
             var lit = tag >> 2
-            var extra = 0
             if lit >= 60:
-                extra = lit - 59
+                var extra = lit - 59
                 lit = 0
                 var e = 0
                 while e < extra:
@@ -149,13 +157,14 @@ def snappy_decompress(raw: List[Byte]) raises DecodeError -> List[Byte]:
                     i += 1
                     e += 1
             lit += 1
-            if lit < 0 or i + lit > len(raw) or len(out) + lit > expect:
+            if lit < 0 or i + lit > len(raw) or o + lit > expect:
                 raise DecodeError(DecodeError.KIND_COMPRESSION, i)
             var k = 0
             while k < lit:
-                out.append(raw[i + k])
+                out[o + k] = raw[i + k]
                 k += 1
             i += lit
+            o += lit
         else:
             var length = 0
             var offset = 0
@@ -177,13 +186,14 @@ def snappy_decompress(raw: List[Byte]) raises DecodeError -> List[Byte]:
                     raise DecodeError(DecodeError.KIND_COMPRESSION, i)
                 offset = Int(raw[i]) | (Int(raw[i + 1]) << 8) | (Int(raw[i + 2]) << 16) | (Int(raw[i + 3]) << 24)
                 i += 4
-            if offset <= 0 or offset > len(out) or len(out) + length > expect:
+            if offset <= 0 or offset > o or o + length > expect:
                 raise DecodeError(DecodeError.KIND_COMPRESSION, i)
             var k = 0
-            var start = len(out) - offset
+            var start = o - offset
             while k < length:
-                out.append(out[start + k])
+                out[o + k] = out[start + k]
                 k += 1
-    if len(out) != expect:
+            o += length
+    if o != expect:
         raise DecodeError(DecodeError.KIND_COMPRESSION, i)
     return out^

@@ -50,6 +50,21 @@ struct RevBits:
         self.bitpos = bitpos
 
     def read(mut self, data: List[Byte], n: Int) -> Int:
+        if n <= 0:
+            return 0
+        var hi = self.bitpos
+        var lo = hi - n + 1
+        if n <= 56 and lo >= 0:
+            var byte_lo = self.base + (lo >> 3)
+            var w = UInt64(0)
+            var t = 0
+            while t < 8 and byte_lo + t < len(data):
+                w = w | (UInt64(Int(data[byte_lo + t])) << UInt64(8 * t))
+                t += 1
+            var mask = _sl_u(UInt64(1), n) - 1
+            var piece = (w >> UInt64(lo & 7)) & mask
+            self.bitpos = hi - n
+            return Int(piece)
         var v = 0
         var k = 0
         while k < n:
@@ -82,6 +97,20 @@ struct FwdBits:
         self.bit = 0
 
     def read(mut self, data: List[Byte], n: Int) -> Int:
+        if n <= 0:
+            return 0
+        if n <= 24:
+            var b0 = self.i
+            var w = self._at(data, b0)
+            w = w | (self._at(data, b0 + 1) << 8)
+            w = w | (self._at(data, b0 + 2) << 16)
+            w = w | (self._at(data, b0 + 3) << 24)
+            w = w >> self.bit
+            var mask = (1 << n) - 1
+            var total = self.bit + n
+            self.i = b0 + (total >> 3)
+            self.bit = total & 7
+            return w & mask
         var v = 0
         var k = 0
         while k < n:
@@ -95,6 +124,11 @@ struct FwdBits:
                 self.i += 1
             k += 1
         return v
+
+    def _at(self, data: List[Byte], idx: Int) -> Int:
+        if idx < self.origin or idx >= self.limit or idx < 0 or idx >= len(data):
+            return 0
+        return Int(data[idx])
 
     def peek(mut self, data: List[Byte], n: Int) -> Int:
         var si = self.i
@@ -151,6 +185,8 @@ struct ZCtx:
         self.bits_of = List[Int]()
 
     def prepare(mut self) raises DecodeError:
+        if self.ll_def.log != 0:
+            return
         self.bases_ll = ll_base()
         self.bits_ll = ll_bits()
         self.bases_ml = ml_base()
@@ -229,12 +265,14 @@ def zstd_compress(raw: List[Byte]) raises DecodeError -> List[Byte]:
             out.append(raw[off])
         else:
             var hdr = (take << 3) | last
-            out.append(Byte(hdr & 255))
-            out.append(Byte((hdr >> 8) & 255))
-            out.append(Byte((hdr >> 16) & 255))
+            var base = len(out)
+            out.resize(base + 3 + take, Byte(0))
+            out[base] = Byte(hdr & 255)
+            out[base + 1] = Byte((hdr >> 8) & 255)
+            out[base + 2] = Byte((hdr >> 16) & 255)
             var i = 0
             while i < take:
-                out.append(raw[off + i])
+                out[base + 3 + i] = raw[off + i]
                 i += 1
         off += take
     return out^
@@ -242,7 +280,6 @@ def zstd_compress(raw: List[Byte]) raises DecodeError -> List[Byte]:
 
 def zstd_decompress(raw: List[Byte]) raises DecodeError -> List[Byte]:
     var ctx = ZCtx()
-    ctx.prepare()
     var out = List[Byte]()
     var pos = 0
     var n = len(raw)
@@ -547,10 +584,14 @@ def _sequences(mut self: ZCtx, data: List[Byte], mut pos: Int, end: Int, lits: L
     if nb == 0:
         if pos != end:
             raise DecodeError(DecodeError.KIND_COMPRESSION, pos)
-        var i = 0
-        while i < len(lits):
-            out.append(lits[i])
-            i += 1
+        var base = len(out)
+        var nlit = len(lits)
+        if nlit > 0:
+            out.resize(base + nlit, Byte(0))
+            var i = 0
+            while i < nlit:
+                out[base + i] = lits[i]
+                i += 1
         return
     if pos >= end:
         raise DecodeError(DecodeError.KIND_COMPRESSION, pos)
@@ -631,18 +672,24 @@ def _sequences(mut self: ZCtx, data: List[Byte], mut pos: Int, end: Int, lits: L
             raise DecodeError(DecodeError.KIND_COMPRESSION, pos)
         if lit_i + lit_len > len(lits):
             raise DecodeError(DecodeError.KIND_COMPRESSION, pos)
-        var t = 0
-        while t < lit_len:
-            out.append(lits[lit_i])
-            lit_i += 1
-            t += 1
+        if lit_len > 0:
+            var base = len(out)
+            out.resize(base + lit_len, Byte(0))
+            var t = 0
+            while t < lit_len:
+                out[base + t] = lits[lit_i]
+                lit_i += 1
+                t += 1
         if offset > len(out) or offset > window:
             raise DecodeError(DecodeError.KIND_COMPRESSION, pos)
-        var mpos = len(out) - offset
-        t = 0
-        while t < match_len:
-            out.append(out[mpos + t])
-            t += 1
+        if match_len > 0:
+            var base2 = len(out)
+            var mpos = base2 - offset
+            out.resize(base2 + match_len, Byte(0))
+            var t2 = 0
+            while t2 < match_len:
+                out[base2 + t2] = out[mpos + t2]
+                t2 += 1
         if is_last == 0:
             st_ll = ll_next + br.read(data, ll_nb)
             st_ml = ml_next + br.read(data, ml_nb)
@@ -652,9 +699,15 @@ def _sequences(mut self: ZCtx, data: List[Byte], mut pos: Int, end: Int, lits: L
         nseq += 1
     if br.bitpos != -1:
         raise DecodeError(DecodeError.KIND_COMPRESSION, pos)
-    while lit_i < len(lits):
-        out.append(lits[lit_i])
-        lit_i += 1
+    if lit_i < len(lits):
+        var base = len(out)
+        var left = len(lits) - lit_i
+        out.resize(base + left, Byte(0))
+        var t = 0
+        while t < left:
+            out[base + t] = lits[lit_i]
+            lit_i += 1
+            t += 1
     self.seq_on = 1
 
 
@@ -664,6 +717,7 @@ def _install_table(mut ctx: ZCtx, data: List[Byte], mut pos: Int, end: Int, whic
             raise DecodeError(DecodeError.KIND_COMPRESSION, pos)
         return
     if mode == 0:
+        ctx.prepare()
         if which == 0:
             var copied = _copy_fse(ctx.ll_def)
             ctx.ll = copied^
@@ -797,6 +851,7 @@ def _huf_decode(data: List[Byte], start: Int, size: Int, tab: HuffTab, count: In
         if br.bitpos != -1:
             raise DecodeError(DecodeError.KIND_COMPRESSION, start)
         return out^
+    out.resize(count, Byte(0))
     var k = 0
     while k < count:
         var val = br.peek(data, tab.log)
@@ -808,7 +863,7 @@ def _huf_decode(data: List[Byte], start: Int, size: Int, tab: HuffTab, count: In
         var skip = br.read(data, nb)
         if skip < 0:
             raise DecodeError(DecodeError.KIND_COMPRESSION, start)
-        out.append(Byte(tab.sym[val]))
+        out[k] = Byte(tab.sym[val])
         k += 1
     if br.bitpos != -1:
         raise DecodeError(DecodeError.KIND_COMPRESSION, start)
@@ -1079,6 +1134,10 @@ def _rev(data: List[Byte], start: Int, size: Int) raises DecodeError -> RevBits:
     var hibit = _bit_length(last) - 1
     var bitpos = (size - 1) * 8 + hibit - 1
     return RevBits(start, bitpos)
+
+
+def _sl_u(v: UInt64, n: Int) -> UInt64:
+    return v << UInt64(n)
 
 
 def _bit_length(v: Int) -> Int:

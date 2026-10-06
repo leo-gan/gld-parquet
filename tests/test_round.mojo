@@ -27,6 +27,15 @@ def round_one(path: String) raises:
     while leaf < t.foot.schema.nleaves:
         if t.cols.val_n[leaf] != back.cols.val_n[leaf]:
             raise Error(path)
+        if t.cols.level_n[leaf] != back.cols.level_n[leaf]:
+            raise Error(path)
+        var lv = 0
+        while lv < t.cols.level_n[leaf]:
+            if t.cols.defs[t.cols.level_b[leaf] + lv] != back.cols.defs[back.cols.level_b[leaf] + lv]:
+                raise Error(path)
+            if t.cols.reps[t.cols.level_b[leaf] + lv] != back.cols.reps[back.cols.level_b[leaf] + lv]:
+                raise Error(path)
+            lv += 1
         var physical = t.foot.schema.physical[t.cols.schema_i[leaf]]
         if physical == 4 or physical == 5:
             var i = 0
@@ -35,8 +44,25 @@ def round_one(path: String) raises:
                     raise Error(path)
                 i += 1
         elif physical == 6 or physical == 7 or physical == 3:
-            if t.cols.ends[t.cols.val_b[leaf] + t.cols.val_n[leaf] - 1] != back.cols.ends[back.cols.val_b[leaf] + back.cols.val_n[leaf] - 1] and t.cols.val_n[leaf] > 0:
-                raise Error(path)
+            if t.cols.val_n[leaf] > 0:
+                var a_end = t.cols.ends[t.cols.val_b[leaf] + t.cols.val_n[leaf] - 1]
+                var b_end = back.cols.ends[back.cols.val_b[leaf] + back.cols.val_n[leaf] - 1]
+                var a0 = t.cols.byte_b[leaf]
+                var b0 = back.cols.byte_b[leaf]
+                if a_end - a0 != b_end - b0:
+                    raise Error(path)
+                var bi = 0
+                while bi < t.cols.val_n[leaf]:
+                    var ae = t.cols.ends[t.cols.val_b[leaf] + bi] - a0
+                    var be = back.cols.ends[back.cols.val_b[leaf] + bi] - b0
+                    if ae != be:
+                        raise Error(path)
+                    bi += 1
+                var k = 0
+                while k < a_end - a0:
+                    if t.cols.raw[a0 + k] != back.cols.raw[b0 + k]:
+                        raise Error(path)
+                    k += 1
         else:
             same_i(t.cols.val_b[leaf], t.cols.val_n[leaf], back.cols.val_b[leaf], back.cols.val_n[leaf], t.cols.i64s, back.cols.i64s)
         leaf += 1

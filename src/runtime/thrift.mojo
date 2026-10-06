@@ -47,7 +47,7 @@ struct TOut:
     var last: Int
 
     def __init__(out self):
-        self.b = List[Byte]()
+        self.b = List[Byte](capacity=256)
         self.last = 0
 
     def uvar(mut self, v: UInt64):
@@ -143,7 +143,8 @@ struct TRead[origin: ImmOrigin]:
         buf_need(len(self.raw), n, self.i)
 
     def byte(mut self) raises DecodeError -> Int:
-        self.need(1)
+        if self.i < 0 or self.i >= len(self.raw):
+            raise DecodeError(DecodeError.KIND_EOF, self.i)
         var v = Int(self.raw[self.i])
         self.i += 1
         return v
@@ -227,8 +228,15 @@ struct TRead[origin: ImmOrigin]:
         return out^
 
     def read_text(mut self) raises DecodeError -> String:
-        var raw = self.read_bin()
-        return string_from(Span(raw), self.i)
+        if self.typ != T_BINARY:
+            raise DecodeError(DecodeError.KIND_TYPE, self.i, self.fid)
+        var n = Int(self.uvar())
+        if n < 0 or n > 268435456:
+            raise DecodeError(DecodeError.KIND_RANGE, self.i)
+        self.need(n)
+        var start = self.i
+        self.i += n
+        return string_from(self.raw[start:self.i], start)
 
     def list_head(mut self) raises DecodeError -> Int:
         """Element count. Element type is left in `typ`."""
