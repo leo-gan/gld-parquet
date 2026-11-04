@@ -1,5 +1,7 @@
 # mojo-parquet
 
+[Serialization](https://leo-gan.github.io/serialization/) is the hub for the theory, the history, and the benchmarks.
+
 A from-scratch Apache Parquet implementation for [Mojo](https://www.modular.com/mojo).
 The runtime and the code generator are written in Mojo. They do not wrap, link,
 or vendor the Arrow C++ library, parquet-mr, or any other C, C++, or Rust
